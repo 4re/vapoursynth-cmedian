@@ -21,6 +21,16 @@
 #include <algorithm>
 #include <emmintrin.h>
 
+constexpr uint32_t getCoarseBits(uint32_t bits)
+{
+    if (bits == 8)
+        return 4;
+    if (bits == 10)
+        return 5;
+    if (bits == 16)
+        return 8;
+}
+
 typedef struct CMedian
 {
     VSNodeRef *node;
@@ -113,10 +123,12 @@ static inline void cmedian_kernel(const T *srcp, const int srcStride, T *dstp, c
 {
     const int radius = d->radius;
 
-    const uint32_t rshift = (bits >> 1);
-    const uint32_t lshift = sizeof(T) * 8 - (bits >> 1);
-    const uint32_t sCoarse = 1 << rshift;
+    const uint32_t coarseBits = getCoarseBits(bits);
+    const uint32_t sCoarse = 1 << coarseBits;
+    const uint32_t sCoarse2 = 1 << (bits - coarseBits);
     const uint32_t sFine = 1 << bits;
+
+    const uint32_t lshift = sizeof(T) * 8 - (coarseBits);
 
     // set column hist beg & end
     const int hBeg = std::max(0, offsBeg - radius);
@@ -124,11 +136,11 @@ static inline void cmedian_kernel(const T *srcp, const int srcStride, T *dstp, c
 
     // initialize column hist
     for (int x = hBeg; x < hEnd; ++x) {
-        histZero<CountType, sCoarse>(hCoarse + (x << rshift));
+        histZero<CountType, sCoarse>(hCoarse + (x << coarseBits));
         histZero<CountType, sFine>(hFine + (x << bits));
         for (int y = 0; y < radius; ++y) {
             T val = srcp[x + srcStride * y];
-            ++hCoarse[(x << rshift) + (val >> rshift)];
+            ++hCoarse[(x << coarseBits) + (val >> (bits - coarseBits))];
             ++hFine[(x << bits) + (val << lshift >> lshift)];
         }
     }
@@ -141,7 +153,7 @@ static inline void cmedian_kernel(const T *srcp, const int srcStride, T *dstp, c
         if (y + radius < h) {
             for (int x = hBeg; x < hEnd; ++x) {
                 T val = srcp[x + radius * srcStride];
-                ++hCoarse[(x << rshift) + (val >> rshift)];
+                ++hCoarse[(x << coarseBits) + (val >> (bits - coarseBits))];
                 ++hFine[(x << bits) + (val << lshift >> lshift)];
             }
         }
@@ -150,7 +162,7 @@ static inline void cmedian_kernel(const T *srcp, const int srcStride, T *dstp, c
         histZero<CountType, sCoarse>(kCoarse);
         histZero<CountType, sFine>(kFine);
         for (int x = hBeg; x < std::min(w, offsBeg + radius); ++x)
-            histAdd<CountType, sCoarse>(kCoarse, hCoarse + (x << rshift));
+            histAdd<CountType, sCoarse>(kCoarse, hCoarse + (x << coarseBits));
 
 
         for (int x = offsBeg; x < std::min(w, offsEnd); ++x) {
@@ -161,7 +173,7 @@ static inline void cmedian_kernel(const T *srcp, const int srcStride, T *dstp, c
 
             // add coarse on the right side
             if (x + radius < w)
-                histAdd<CountType, sCoarse>(kCoarse, hCoarse + ((end - 1) << rshift));
+                histAdd<CountType, sCoarse>(kCoarse, hCoarse + ((end - 1) << coarseBits));
 
             // get median number
             const uint32_t bound = ((std::min(w, x + radius + 1) - std::max(0, x - radius)) *
@@ -179,18 +191,18 @@ static inline void cmedian_kernel(const T *srcp, const int srcStride, T *dstp, c
             assert(coarseIdx < sCoarse);
 
             // partially update fine
-            const int fineOffs = coarseIdx << rshift;
+            const int fineOffs = coarseIdx << (bits - coarseBits);
             if (colPair[coarseIdx].end <= beg) {
                 // no overlap so we just zero the fine and recalulate by current area that kernel is on
-                histZero<CountType, sCoarse>(kFine + fineOffs);
+                histZero<CountType, sCoarse2>(kFine + fineOffs);
                 for (int i = beg; i < end; ++i)
-                    histAdd<CountType, sCoarse>(kFine + fineOffs, hFine + (i << bits) + fineOffs);
+                    histAdd<CountType, sCoarse2>(kFine + fineOffs, hFine + (i << bits) + fineOffs);
             } else {
                 // overlap so we do multiple addition and subtraction to reach current area that kernel is on
                 for (int i = colPair[coarseIdx].end; i < end; ++i)
-                    histAdd<CountType, sCoarse>(kFine + fineOffs, hFine + (i << bits) + fineOffs);
+                    histAdd<CountType, sCoarse2>(kFine + fineOffs, hFine + (i << bits) + fineOffs);
                 for (int i = colPair[coarseIdx].beg; i < beg; ++i)
-                    histSub<CountType, sCoarse>(kFine + fineOffs, hFine + (i << bits) + fineOffs);
+                    histSub<CountType, sCoarse2>(kFine + fineOffs, hFine + (i << bits) + fineOffs);
             }
             // update colPair
             colPair[coarseIdx].beg = beg;
@@ -209,14 +221,14 @@ static inline void cmedian_kernel(const T *srcp, const int srcStride, T *dstp, c
 
             // sub coarse on the left side
             if (x - radius >= 0)
-                histSub<CountType, sCoarse>(kCoarse, hCoarse + (beg << rshift));
+                histSub<CountType, sCoarse>(kCoarse, hCoarse + (beg << coarseBits));
         }
 
         // sub column hist of previous rows
         if (y - radius >= 0) {
             for (int x = hBeg; x < hEnd; ++x) {
                 T val = srcp[x - radius * srcStride];
-                --hCoarse[(x << rshift) + (val >> rshift)];
+                --hCoarse[(x << coarseBits) + (val >> (bits - coarseBits))];
                 --hFine[(x << bits) + (val << lshift >> lshift)];
             }
         }
@@ -231,7 +243,8 @@ static inline void cmedian(const T *srcp, const int srcStride, T *dstp, const in
 {
     static_assert(bits % 2 == 0, "bits must be even number");
 
-    const uint32_t sCoarse = 1 << (bits >> 1);
+    const uint32_t coarseBits = getCoarseBits(bits);
+    const uint32_t sCoarse = 1 << coarseBits;
     const uint32_t sFine = 1 << bits;
 
     void *hCoarse = nullptr;
