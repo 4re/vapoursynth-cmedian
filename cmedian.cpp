@@ -267,8 +267,7 @@ static inline void cmedian(const T *srcp, const int srcStride, T *dstp, const in
     ColPair *colPair = vs_aligned_malloc<ColPair>(sizeof(ColPair) * sCoarse, 32);
 
     // split frames to process
-    const int lowerlimit = (d->radius <= 64) ? 64 : 128;
-    const int step = std::max(256 >> (bits - 8), lowerlimit);
+    const int step = (bits == 8) ? 256 : (bits == 10) ? 192 : (bits == 16) ? 128 : 256;
     for (int i = 0; i < w; i += step) {
         if (d->radius < 8)
             cmedian_kernel<T, uint8_t, bits>(srcp, srcStride, dstp, dstStride, w, h, d, plane, i, i + step,
