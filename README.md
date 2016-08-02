@@ -1,4 +1,4 @@
-# CMedian - VapouSynth Constant Time Median Filter #
+# CMedian - VapourSynth Constant Time Median Filter #
 
 *   implements the constant time median filter algorithm [Link](https://nomis80.org/ctmf.html)
 
@@ -19,7 +19,7 @@
     cmedian.Median(clip clip[, radius=1, int[] planes=[0, 1, 2]])
 
 *   clip: the input clip
-    *   all ColorFamilty support
+    *   all color family support
     *   8, 10, 16 integer type support
 
 ***
