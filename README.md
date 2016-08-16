@@ -19,8 +19,8 @@
     cmedian.Median(clip clip[, radius=1, int[] planes=[0, 1, 2]])
 
 *   clip: the input clip
-    *   all color family support
     *   8, 10, 16 integer type support
+    *   all color family support
 
 ***
 *   radius: the kernel radius, which will result a (2 * radius + 1) * (2 * radius + 1) square.
@@ -41,12 +41,10 @@
     the cost on computing histogram grows exponentially as the bitdepth increases.
     so you may find that 16 bit input is much slower than 8 bit input.
 
-    for radius= 1 ... 7, it is optimazed by using 8 bit size counter
-    for radius= 8 ... 127, it uses 16 bit size counter which should be slower.
+    for radius= 1 ... 7, it uses 8 bit size counter
+    for radius= 8 ... 127, it uses 16 bit size counter
 
     and for radius=1, you can use rgvs.RemoveGrain(4) instead of this filter, it's much faster duo to its specific algorithm.
-
-    CPU: E3 1230-V2 4C8T
 
         YUV420P8 1920x1080
             cmedian.Median(radius=1, planes=[0, 1, 2])      47.2 fps
@@ -56,19 +54,24 @@
             cmedian.Median(radius=1, planes=[0, 1, 2])      27.1 fps
             cmedian.Median(radius=8, planes=[0, 1, 2])      24.5 fps
 
-        YUV420P16 1920x1080
+        YUV444P16 1920x1080
             cmedian.Median(radius=1, planes=[0, 1, 2])      5.9 fps
             cmedian.Median(radius=8, planes=[0, 1, 2])      2.7 fps
 
 ## License ##
 
-    CMedian
+    CMedian - VapourSynth Constant Time Median Filter
 
-    DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE
-    Version 2, December 2004
+    CMedian is free software; you can redistribute it and/or
+    modify it under the terms of the GNU Lesser General Public
+    License as published by the Free Software Foundation; either
+    version 2.1 of the License, or (at your option) any later version.
 
-    This program is free software. It comes without any warranty, to
-    the extent permitted by applicable law. You can redistribute it
-    and/or modify it under the terms of the Do What The Fuck You Want
-    To Public License, Version 2, as published by Sam Hocevar. See
-    http://sam.zoy.org/wtfpl/COPYING for more details.
+    VapourSynth is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+    Lesser General Public License for more details.
+
+    You should have received a copy of the GNU Lesser General Public
+    License along with VapourSynth; if not, write to the Free Software
+    Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
