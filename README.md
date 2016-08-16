@@ -33,31 +33,6 @@
 
 ***
 
-## Performance ##
-
-    This is the implementation of constant time median filter.
-    the runtime complexity is O(1) for any 'radius'.
-    but note that it uses the histogram data structure for implementing the algorithm,
-    the cost on computing histogram grows exponentially as the bitdepth increases.
-    so you may find that 16 bit input is much slower than 8 bit input.
-
-    for radius= 1 ... 7, it uses 8 bit size counter
-    for radius= 8 ... 127, it uses 16 bit size counter
-
-    and for radius=1, you can use rgvs.RemoveGrain(4) instead of this filter, it's much faster duo to its specific algorithm.
-
-        YUV420P8 1920x1080
-            cmedian.Median(radius=1, planes=[0, 1, 2])      47.2 fps
-            cmedian.Median(radius=8, planes=[0, 1, 2])      42.8 fps
-
-        YUV420P10 1920x1080
-            cmedian.Median(radius=1, planes=[0, 1, 2])      27.1 fps
-            cmedian.Median(radius=8, planes=[0, 1, 2])      24.5 fps
-
-        YUV444P16 1920x1080
-            cmedian.Median(radius=1, planes=[0, 1, 2])      5.9 fps
-            cmedian.Median(radius=8, planes=[0, 1, 2])      2.7 fps
-
 ## License ##
 
     CMedian - VapourSynth Constant Time Median Filter
