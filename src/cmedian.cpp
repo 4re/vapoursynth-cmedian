@@ -29,12 +29,7 @@ static const size_t sseBytes = 16;
 
 constexpr uint32_t getCoarseBits(uint32_t bits)
 {
-    if (bits == 8)
-        return 4;
-    if (bits == 10)
-        return 5;
-    if (bits == 16)
-        return 8;
+    return bits >> 1;
 }
 
 typedef struct CMedian
@@ -249,32 +244,9 @@ static inline void cmedian_kernel(const T *srcp, const int srcStride, T *dstp, c
 }
 
 template <typename T, size_t bits>
-static inline void cmedian(const T *srcp, const int srcStride, T *dstp, const int dstStride, const int w, const int h, CMedian *d, int plane)
+static inline void cmedian(const T *srcp, const int srcStride, T *dstp, const int dstStride, const int w, const int h, CMedian *d, int plane, void *hCoarse, void *hFine, void *kCoarse, void *kFine, ColPair *colPair)
 {
     static_assert(bits % 2 == 0, "bits must be even number");
-
-    const uint32_t coarseBits = getCoarseBits(bits);
-    const uint32_t sCoarse = 1 << coarseBits;
-    const uint32_t sFine = 1 << bits;
-
-    void *hCoarse = nullptr;
-    void *hFine = nullptr;
-    void *kCoarse = nullptr;
-    void *kFine = nullptr;
-
-    if (d->radius < 8) {
-        hCoarse = vs_aligned_malloc<void>(sizeof(uint8_t) * w * sCoarse, 32);
-        hFine = vs_aligned_malloc<void>(sizeof(uint8_t) * w * sFine, 32);
-        kCoarse = vs_aligned_malloc<void>(sizeof(uint8_t) * sCoarse, 32);
-        kFine = vs_aligned_malloc<void>(sizeof(uint8_t) * sFine, 32);
-    } else {
-        hCoarse = vs_aligned_malloc<void>(sizeof(uint16_t) * w * sCoarse, 32);
-        hFine = vs_aligned_malloc<void>(sizeof(uint16_t) * w * sFine, 32);
-        kCoarse = vs_aligned_malloc<void>(sizeof(uint16_t) * sCoarse, 32);
-        kFine = vs_aligned_malloc<void>(sizeof(uint16_t) * sFine, 32);
-    }
-
-    ColPair *colPair = vs_aligned_malloc<ColPair>(sizeof(ColPair) * sCoarse, 32);
 
     // split frames to process
     const int step = (bits == 8) ? 256 : (bits == 10) ? 192 : (bits == 16) ? 128 : 256;
@@ -288,12 +260,6 @@ static inline void cmedian(const T *srcp, const int srcStride, T *dstp, const in
                 reinterpret_cast<uint16_t*>(hCoarse), reinterpret_cast<uint16_t*>(hFine),
                 reinterpret_cast<uint16_t*>(kCoarse), reinterpret_cast<uint16_t*>(kFine), colPair);
     }
-
-    vs_aligned_free(hCoarse);
-    vs_aligned_free(hFine);
-    vs_aligned_free(kCoarse);
-    vs_aligned_free(kFine);
-    vs_aligned_free(colPair);
 }
 
 static void VS_CC cmedianInit(VSMap *in, VSMap *out, void **instanceData, VSNode* node, VSCore *core, const VSAPI *vsapi)
@@ -315,6 +281,28 @@ static const VSFrameRef *VS_CC cmedianGetFrame(int n, int activationReason, void
         auto src = vsapi->getFrameFilter(n, d->node, frameCtx);
         auto dst = vsapi->copyFrame(src, core);
 
+        ///////////////////////////////////////////////////////////////////////
+        const uint32_t coarseBits = getCoarseBits(d->vi->format->bitsPerSample);
+        const uint32_t sCoarse = 1 << coarseBits;
+        const uint32_t sFine = 1 << d->vi->format->bitsPerSample;
+
+        void *hCoarse = nullptr, *hFine = nullptr, *kCoarse = nullptr, *kFine = nullptr;
+
+        if (d->radius < 8) {
+            hCoarse = vs_aligned_malloc<void>(sizeof(uint8_t) * d->vi->width * sCoarse, 32);
+            hFine = vs_aligned_malloc<void>(sizeof(uint8_t) * d->vi->width * sFine, 32);
+            kCoarse = vs_aligned_malloc<void>(sizeof(uint8_t) * sCoarse, 32);
+            kFine = vs_aligned_malloc<void>(sizeof(uint8_t) * sFine, 32);
+        } else {
+            hCoarse = vs_aligned_malloc<void>(sizeof(uint16_t) * d->vi->width * sCoarse, 32);
+            hFine = vs_aligned_malloc<void>(sizeof(uint16_t) * d->vi->width * sFine, 32);
+            kCoarse = vs_aligned_malloc<void>(sizeof(uint16_t) * sCoarse, 32);
+            kFine = vs_aligned_malloc<void>(sizeof(uint16_t) * sFine, 32);
+        }
+
+        ColPair *colPair = vs_aligned_malloc<ColPair>(sizeof(ColPair) * sCoarse, 32);
+        ///////////////////////////////////////////////////////////////////////
+
         for (int plane = 0; plane < d->vi->format->numPlanes; ++plane) {
 
             if (!d->planes[plane])
@@ -329,13 +317,19 @@ static const VSFrameRef *VS_CC cmedianGetFrame(int n, int activationReason, void
 
             if (d->vi->format->sampleType == stInteger) {
                 if (d->vi->format->bitsPerSample == 8)
-                    cmedian<uint8_t, 8>(srcp, srcStride, dstp, dstStride, width, height, d, plane);
+                    cmedian<uint8_t, 8>(srcp, srcStride, dstp, dstStride, width, height, d, plane, hCoarse, hFine, kCoarse, kFine, colPair);
                 else if (d->vi->format->bitsPerSample == 10)
-                    cmedian<uint16_t, 10>(reinterpret_cast<const uint16_t*>(srcp), srcStride, reinterpret_cast<uint16_t*>(dstp), dstStride, width, height, d, plane);
+                    cmedian<uint16_t, 10>(reinterpret_cast<const uint16_t*>(srcp), srcStride, reinterpret_cast<uint16_t*>(dstp), dstStride, width, height, d, plane, hCoarse, hFine, kCoarse, kFine, colPair);
                 else if (d->vi->format->bitsPerSample == 16)
-                    cmedian<uint16_t, 16>(reinterpret_cast<const uint16_t*>(srcp), srcStride, reinterpret_cast<uint16_t*>(dstp), dstStride, width, height, d, plane);
+                    cmedian<uint16_t, 16>(reinterpret_cast<const uint16_t*>(srcp), srcStride, reinterpret_cast<uint16_t*>(dstp), dstStride, width, height, d, plane, hCoarse, hFine, kCoarse, kFine, colPair);
             }
         }
+
+        vs_aligned_free(hCoarse);
+        vs_aligned_free(hFine);
+        vs_aligned_free(kCoarse);
+        vs_aligned_free(kFine);
+        vs_aligned_free(colPair);
 
         vsapi->freeFrame(src);
         return dst;
