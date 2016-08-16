@@ -25,6 +25,8 @@
 #include <algorithm>
 #include <emmintrin.h>
 
+static const size_t sseBytes = 16;
+
 constexpr uint32_t getCoarseBits(uint32_t bits)
 {
     if (bits == 8)
@@ -51,72 +53,76 @@ typedef struct ColPair
 } ColPair;
 
 template <typename>
-static inline __m128i simdAdds(const __m128i &a, const __m128i &b);
+static inline __m128i sse_adds(const __m128i &a, const __m128i &b);
 
 template <>
-inline __m128i simdAdds<uint8_t>(const __m128i &a, const __m128i &b)
+inline __m128i sse_adds<uint8_t>(const __m128i &a, const __m128i &b)
 {
     return _mm_adds_epu8(a, b);
 }
 
 template <>
-inline __m128i simdAdds<uint16_t>(const __m128i &a, const __m128i &b)
+inline __m128i sse_adds<uint16_t>(const __m128i &a, const __m128i &b)
 {
     return _mm_adds_epu16(a, b);
 }
 
 template <typename>
-static inline __m128i simdSubs(const __m128i &a, const __m128i &b);
+static inline __m128i sse_subs(const __m128i &a, const __m128i &b);
 
 template <>
-inline __m128i simdSubs<uint8_t>(const __m128i &a, const __m128i &b)
+inline __m128i sse_subs<uint8_t>(const __m128i &a, const __m128i &b)
 {
     return _mm_subs_epu8(a, b);
 }
 
 template <>
-inline __m128i simdSubs<uint16_t>(const __m128i &a, const __m128i &b)
+inline __m128i sse_subs<uint16_t>(const __m128i &a, const __m128i &b)
 {
     return _mm_subs_epu16(a, b);
 }
 
 template <typename T, size_t size>
-static inline void histAdd(T *a, const T *b)
+static inline void sse_histAdd(T *a, const T *b)
 {
-    for (uint32_t i = 0; i < (size / (16 / sizeof(T))); ++i) {
-        __m128i sa = _mm_load_si128(reinterpret_cast<__m128i*>(a) + i);
-        __m128i sb = _mm_load_si128(reinterpret_cast<const __m128i*>(b) + i);
-        __m128i sum = simdAdds<T>(sa, sb);
-        _mm_store_si128(reinterpret_cast<__m128i*>(a) + i, sum);
+    constexpr uint32_t pixelStep = sseBytes / sizeof(T);
+    for (uint32_t i = 0; i < size; i += pixelStep) {
+        __m128i sa = _mm_load_si128(reinterpret_cast<__m128i*>(a + i));
+        __m128i sb = _mm_load_si128(reinterpret_cast<const __m128i*>(b + i));
+        __m128i sum = sse_adds<T>(sa, sb);
+        _mm_store_si128(reinterpret_cast<__m128i*>(a + i), sum);
     }
 }
 
 template <typename T, size_t size>
-static inline void histSub(T *a, const T *b)
+static inline void sse_histSub(T *a, const T *b)
 {
-    for (uint32_t i = 0; i < (size / (16 / sizeof(T))); ++i) {
-        __m128i sa = _mm_load_si128(reinterpret_cast<__m128i*>(a) + i);
-        __m128i sb = _mm_load_si128(reinterpret_cast<const __m128i*>(b) + i);
-        __m128i sum = simdSubs<T>(sa, sb);
-        _mm_store_si128(reinterpret_cast<__m128i*>(a) + i, sum);
+    constexpr uint32_t pixelStep = sseBytes / sizeof(T);
+    for (uint32_t i = 0; i < size; i += pixelStep) {
+        __m128i sa = _mm_load_si128(reinterpret_cast<__m128i*>(a + i));
+        __m128i sb = _mm_load_si128(reinterpret_cast<const __m128i*>(b + i));
+        __m128i sum = sse_subs<T>(sa, sb);
+        _mm_store_si128(reinterpret_cast<__m128i*>(a + i), sum);
     }
 }
 
 template <typename T, size_t size>
-static inline void histZero(T *a)
+static inline void sse_histZero(T *a)
 {
+    constexpr uint32_t pixelStep = sseBytes / sizeof(T);
     const __m128i zero = _mm_setzero_si128();
-    for (uint32_t i = 0; i < (size / (16 / sizeof(T))); ++i) {
-        _mm_store_si128(reinterpret_cast<__m128i*>(a) + i, zero);
+    for (uint32_t i = 0; i < size; i += pixelStep) {
+        _mm_store_si128(reinterpret_cast<__m128i*>(a + i), zero);
     }
 }
 
-template <size_t size>
-static inline void simd_set(int *a, const int val)
+template <typename T, size_t size>
+static inline void sse_set(T *a, const int val)
 {
+    constexpr uint32_t pixelStep = sseBytes / sizeof(T);
     const __m128i v = _mm_set1_epi32(val);
-    for (uint32_t i = 0; i < (size / 4); ++i) {
-        _mm_store_si128(reinterpret_cast<__m128i*>(a) + i, v);
+    for (uint32_t i = 0; i < size; i += pixelStep) {
+        _mm_store_si128(reinterpret_cast<__m128i*>(a + i), v);
     }
 }
 
@@ -140,8 +146,8 @@ static inline void cmedian_kernel(const T *srcp, const int srcStride, T *dstp, c
 
     // initialize column hist
     for (int x = hBeg; x < hEnd; ++x) {
-        histZero<CountType, sCoarse>(hCoarse + (x << coarseBits));
-        histZero<CountType, sFine>(hFine + (x << bits));
+        sse_histZero<CountType, sCoarse>(hCoarse + (x << coarseBits));
+        sse_histZero<CountType, sFine>(hFine + (x << bits));
         for (int y = 0; y < radius; ++y) {
             T val = srcp[x + srcStride * y];
             ++hCoarse[(x << coarseBits) + (val >> (bits - coarseBits))];
@@ -151,7 +157,7 @@ static inline void cmedian_kernel(const T *srcp, const int srcStride, T *dstp, c
 
     for (int y = 0; y < h; ++y) {
 
-        simd_set<(sCoarse * 2)>(reinterpret_cast<int*>(colPair), -1);
+        sse_set<int, (sCoarse * 2)>(reinterpret_cast<int*>(colPair), -1);
 
         // add column hist of next rows
         if (y + radius < h) {
@@ -163,10 +169,10 @@ static inline void cmedian_kernel(const T *srcp, const int srcStride, T *dstp, c
         }
 
         // initialize the kernel hist
-        histZero<CountType, sCoarse>(kCoarse);
-        histZero<CountType, sFine>(kFine);
+        sse_histZero<CountType, sCoarse>(kCoarse);
+        sse_histZero<CountType, sFine>(kFine);
         for (int x = hBeg; x < std::min(w, offsBeg + radius); ++x)
-            histAdd<CountType, sCoarse>(kCoarse, hCoarse + (x << coarseBits));
+            sse_histAdd<CountType, sCoarse>(kCoarse, hCoarse + (x << coarseBits));
 
 
         for (int x = offsBeg; x < std::min(w, offsEnd); ++x) {
@@ -177,7 +183,7 @@ static inline void cmedian_kernel(const T *srcp, const int srcStride, T *dstp, c
 
             // add coarse on the right side
             if (x + radius < w)
-                histAdd<CountType, sCoarse>(kCoarse, hCoarse + ((end - 1) << coarseBits));
+                sse_histAdd<CountType, sCoarse>(kCoarse, hCoarse + ((end - 1) << coarseBits));
 
             // get median number
             const uint32_t bound = ((std::min(w, x + radius + 1) - std::max(0, x - radius)) *
@@ -198,15 +204,15 @@ static inline void cmedian_kernel(const T *srcp, const int srcStride, T *dstp, c
             const int fineOffs = coarseIdx << (bits - coarseBits);
             if (colPair[coarseIdx].end <= beg) {
                 // no overlap so we just zero the fine and recalulate by current area that kernel is on
-                histZero<CountType, sCoarse2>(kFine + fineOffs);
+                sse_histZero<CountType, sCoarse2>(kFine + fineOffs);
                 for (int i = beg; i < end; ++i)
-                    histAdd<CountType, sCoarse2>(kFine + fineOffs, hFine + (i << bits) + fineOffs);
+                    sse_histAdd<CountType, sCoarse2>(kFine + fineOffs, hFine + (i << bits) + fineOffs);
             } else {
                 // overlap so we do multiple addition and subtraction to reach current area that kernel is on
                 for (int i = colPair[coarseIdx].end; i < end; ++i)
-                    histAdd<CountType, sCoarse2>(kFine + fineOffs, hFine + (i << bits) + fineOffs);
+                    sse_histAdd<CountType, sCoarse2>(kFine + fineOffs, hFine + (i << bits) + fineOffs);
                 for (int i = colPair[coarseIdx].beg; i < beg; ++i)
-                    histSub<CountType, sCoarse2>(kFine + fineOffs, hFine + (i << bits) + fineOffs);
+                    sse_histSub<CountType, sCoarse2>(kFine + fineOffs, hFine + (i << bits) + fineOffs);
             }
             // update colPair
             colPair[coarseIdx].beg = beg;
@@ -225,7 +231,7 @@ static inline void cmedian_kernel(const T *srcp, const int srcStride, T *dstp, c
 
             // sub coarse on the left side
             if (x - radius >= 0)
-                histSub<CountType, sCoarse>(kCoarse, hCoarse + (beg << coarseBits));
+                sse_histSub<CountType, sCoarse>(kCoarse, hCoarse + (beg << coarseBits));
         }
 
         // sub column hist of previous rows
