@@ -356,14 +356,14 @@ static void VS_CC cmedianCreate(const VSMap *in, VSMap *out, void *userData, VSC
         d->vi = vsapi->getVideoInfo(d->node);
 
         if (d->vi->format->sampleType != stInteger)
-            throw std::string("only support interger sample type");
+            throw std::string("only integer sample type support");
 
         if (d->vi->format->bitsPerSample != 8 &&
             d->vi->format->bitsPerSample != 10 &&
             d->vi->format->bitsPerSample != 16)
-            throw std::string("only support 8, 10, 16 bits");
+            throw std::string("only 8, 10, 16 bits support");
 
-        d->radius = vsapi->propGetInt(in, "radius", 0, &err);
+        d->radius = int64ToIntS(vsapi->propGetInt(in, "radius", 0, &err));
         if (err) d->radius = 1;
 
         if (d->radius < 1 || d->radius > 127)
@@ -380,7 +380,7 @@ static void VS_CC cmedianCreate(const VSMap *in, VSMap *out, void *userData, VSC
                 d->planes[i] = true;
         } else {
             for (int i = 0; i < m; ++i) {
-                int p = vsapi->propGetInt(in, "planes", i, &err);
+                int p = int64ToIntS(vsapi->propGetInt(in, "planes", i, &err));
                 if (p < 0 || p > d->vi->format->numPlanes - 1)
                     throw std::string("planes index out of bound");
                 d->planes[p] = true;
@@ -400,7 +400,7 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegiste
 {
     configFunc("com.mio.cmedian", "cmedian", "VapourSynth Constant Time Median Filter", VAPOURSYNTH_API_VERSION, 1, plugin);
     registerFunc("Median", "clip:clip;"
-                        "radius:int:opt;"
-                        "planes:int[]:opt;",
-                        cmedianCreate, nullptr, plugin);
+        "radius:int:opt;"
+        "planes:int[]:opt;",
+        cmedianCreate, nullptr, plugin);
 }
