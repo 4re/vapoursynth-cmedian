@@ -17,71 +17,69 @@
  *  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  **/
 
-#include <VapourSynth.h>
-#include <VSHelper.h>
-
-#include <cstdint>
-#include <string>
 #include <algorithm>
+#include <cstdint>
 #include <emmintrin.h>
+#include <stdexcept>
+#include <string>
 
-static const size_t sseBytes = 16;
+#include "VSHelper4.h"
+#include "VapourSynth4.h"
+
+static constexpr size_t sseBytes = 16;
 
 constexpr uint32_t getCoarseBits(uint32_t bits)
 {
     return bits >> 1;
 }
 
-typedef struct CMedian
+struct CMedian
 {
-    VSNodeRef *node;
-    const VSVideoInfo *vi;
+    VSNode* node{};
+    const VSVideoInfo* vi{};
 
-    int radius;
-    bool planes[3];
-} CMedian;
+    int radius{};
+    bool planes[3]{};
+};
 
-typedef struct ColPair
+struct ColPair
 {
-    int beg;
-    int end;
-} ColPair;
+    int beg{};
+    int end{};
+};
 
-template <typename>
-static inline __m128i sse_adds(const __m128i &a, const __m128i &b);
-
-template <>
-inline __m128i sse_adds<uint8_t>(const __m128i &a, const __m128i &b)
+template <typename T>
+static __m128i sse_adds(const __m128i& a, const __m128i& b)
 {
-    return _mm_adds_epu8(a, b);
+    if constexpr (std::is_same_v<T, uint8_t>)
+    {
+        return _mm_adds_epu8(a, b);
+    }
+    else
+    {
+        return _mm_adds_epu16(a, b);
+    }
 }
 
-template <>
-inline __m128i sse_adds<uint16_t>(const __m128i &a, const __m128i &b)
+template <typename T>
+static __m128i sse_subs(const __m128i& a, const __m128i& b)
 {
-    return _mm_adds_epu16(a, b);
-}
-
-template <typename>
-static inline __m128i sse_subs(const __m128i &a, const __m128i &b);
-
-template <>
-inline __m128i sse_subs<uint8_t>(const __m128i &a, const __m128i &b)
-{
-    return _mm_subs_epu8(a, b);
-}
-
-template <>
-inline __m128i sse_subs<uint16_t>(const __m128i &a, const __m128i &b)
-{
-    return _mm_subs_epu16(a, b);
+    if constexpr (std::is_same_v<T, uint8_t>)
+    {
+        return _mm_subs_epu8(a, b);
+    }
+    else
+    {
+        return _mm_subs_epu16(a, b);
+    }
 }
 
 template <typename T, size_t size>
-static inline void sse_histAdd(T *a, const T *b)
+static void sse_histAdd(T* a, const T* b)
 {
     constexpr uint32_t pixelStep = sseBytes / sizeof(T);
-    for (uint32_t i = 0; i < size; i += pixelStep) {
+    for (uint32_t i = 0; i < size; i += pixelStep)
+    {
         __m128i sa = _mm_load_si128(reinterpret_cast<__m128i*>(a + i));
         __m128i sb = _mm_load_si128(reinterpret_cast<const __m128i*>(b + i));
         __m128i sum = sse_adds<T>(sa, sb);
@@ -90,10 +88,11 @@ static inline void sse_histAdd(T *a, const T *b)
 }
 
 template <typename T, size_t size>
-static inline void sse_histSub(T *a, const T *b)
+static void sse_histSub(T* a, const T* b)
 {
     constexpr uint32_t pixelStep = sseBytes / sizeof(T);
-    for (uint32_t i = 0; i < size; i += pixelStep) {
+    for (uint32_t i = 0; i < size; i += pixelStep)
+    {
         __m128i sa = _mm_load_si128(reinterpret_cast<__m128i*>(a + i));
         __m128i sb = _mm_load_si128(reinterpret_cast<const __m128i*>(b + i));
         __m128i sum = sse_subs<T>(sa, sb);
@@ -102,29 +101,32 @@ static inline void sse_histSub(T *a, const T *b)
 }
 
 template <typename T, size_t size>
-static inline void sse_histZero(T *a)
+static void sse_histZero(T* a)
 {
     constexpr uint32_t pixelStep = sseBytes / sizeof(T);
     const __m128i zero = _mm_setzero_si128();
-    for (uint32_t i = 0; i < size; i += pixelStep) {
+    for (uint32_t i = 0; i < size; i += pixelStep)
+    {
         _mm_store_si128(reinterpret_cast<__m128i*>(a + i), zero);
     }
 }
 
 template <typename T, size_t size>
-static inline void sse_set(T *a, const int val)
+static void sse_set(T* a, const int val)
 {
     constexpr uint32_t pixelStep = sseBytes / sizeof(T);
     const __m128i v = _mm_set1_epi32(val);
-    for (uint32_t i = 0; i < size; i += pixelStep) {
+    for (uint32_t i = 0; i < size; i += pixelStep)
+    {
         _mm_store_si128(reinterpret_cast<__m128i*>(a + i), v);
     }
 }
 
 template <typename T, typename CountType, size_t bits>
-static inline void cmedian_kernel(const T *srcp, const int srcStride, T *dstp, const int dstStride,
-            const int w, const int h, CMedian *d, int plane,
-            int offsBeg, int offsEnd, CountType *hCoarse, CountType *hFine, CountType *kCoarse, CountType *kFine, ColPair *colPair)
+static void cmedian_kernel(const T* srcp, const int srcStride, T* dstp, const int dstStride,
+                           const int w, const int h, CMedian* d, int /*plane*/,
+                           int offsBeg, int offsEnd, CountType* hCoarse, CountType* hFine,
+                           CountType* kCoarse, CountType* kFine, ColPair* colPair)
 {
     const int radius = d->radius;
 
@@ -140,23 +142,28 @@ static inline void cmedian_kernel(const T *srcp, const int srcStride, T *dstp, c
     const int hEnd = std::min(w, offsEnd + radius);
 
     // initialize column hist
-    for (int x = hBeg; x < hEnd; ++x) {
+    for (int x = hBeg; x < hEnd; ++x)
+    {
         sse_histZero<CountType, sCoarse>(hCoarse + (x << coarseBits));
         sse_histZero<CountType, sFine>(hFine + (x << bits));
-        for (int y = 0; y < radius; ++y) {
+        for (int y = 0; y < radius; ++y)
+        {
             T val = srcp[x + srcStride * y];
             ++hCoarse[(x << coarseBits) + (val >> (bits - coarseBits))];
             ++hFine[(x << bits) + (val << lshift >> lshift)];
         }
     }
 
-    for (int y = 0; y < h; ++y) {
+    for (int y = 0; y < h; ++y)
+    {
 
         sse_set<int, (sCoarse * 2)>(reinterpret_cast<int*>(colPair), -1);
 
         // add column hist of next rows
-        if (y + radius < h) {
-            for (int x = hBeg; x < hEnd; ++x) {
+        if (y + radius < h)
+        {
+            for (int x = hBeg; x < hEnd; ++x)
+            {
                 T val = srcp[x + radius * srcStride];
                 ++hCoarse[(x << coarseBits) + (val >> (bits - coarseBits))];
                 ++hFine[(x << bits) + (val << lshift >> lshift)];
@@ -167,10 +174,12 @@ static inline void cmedian_kernel(const T *srcp, const int srcStride, T *dstp, c
         sse_histZero<CountType, sCoarse>(kCoarse);
         sse_histZero<CountType, sFine>(kFine);
         for (int x = hBeg; x < std::min(w, offsBeg + radius); ++x)
+        {
             sse_histAdd<CountType, sCoarse>(kCoarse, hCoarse + (x << coarseBits));
+        }
 
-
-        for (int x = offsBeg; x < std::min(w, offsEnd); ++x) {
+        for (int x = offsBeg; x < std::min(w, offsEnd); ++x)
+        {
 
             // set kernel hist beg & end
             const int beg = std::max(0, x - radius);
@@ -178,60 +187,83 @@ static inline void cmedian_kernel(const T *srcp, const int srcStride, T *dstp, c
 
             // add coarse on the right side
             if (x + radius < w)
+            {
                 sse_histAdd<CountType, sCoarse>(kCoarse, hCoarse + ((end - 1) << coarseBits));
+            }
 
             // get median number
-            const uint32_t bound = ((std::min(w, x + radius + 1) - std::max(0, x - radius)) *
-                (std::min(h, y + radius + 1) - std::max(0, y - radius))) / 2;
+            const uint32_t bound = static_cast<uint32_t>(
+                ((std::min(w, x + radius + 1) - std::max(0, x - radius)) *
+                 (std::min(h, y + radius + 1) - std::max(0, y - radius))) /
+                2);
 
             // get coarseIdx
             uint32_t sum = 0;
             uint32_t coarseIdx = 0;
-            for (; coarseIdx < sCoarse; ++coarseIdx) {
+            for (; coarseIdx < sCoarse; ++coarseIdx)
+            {
                 sum += kCoarse[coarseIdx];
                 if (sum > bound)
+                {
                     break;
+                }
             }
             sum -= kCoarse[coarseIdx];
             assert(coarseIdx < sCoarse);
 
             // partially update fine
-            const int fineOffs = coarseIdx << (bits - coarseBits);
-            if (colPair[coarseIdx].end <= beg) {
-                // no overlap so we just zero the fine and recalulate by current area that kernel is on
+            const int fineOffs = static_cast<int>(coarseIdx << (bits - coarseBits));
+            if (colPair[coarseIdx].end <= beg)
+            {
+                // no overlap, so we just zero the fine and recalulate by current area that kernel is on
                 sse_histZero<CountType, sCoarse2>(kFine + fineOffs);
                 for (int i = beg; i < end; ++i)
+                {
                     sse_histAdd<CountType, sCoarse2>(kFine + fineOffs, hFine + (i << bits) + fineOffs);
-            } else {
+                }
+            }
+            else
+            {
                 // overlap so we do multiple addition and subtraction to reach current area that kernel is on
                 for (int i = colPair[coarseIdx].end; i < end; ++i)
+                {
                     sse_histAdd<CountType, sCoarse2>(kFine + fineOffs, hFine + (i << bits) + fineOffs);
+                }
                 for (int i = colPair[coarseIdx].beg; i < beg; ++i)
+                {
                     sse_histSub<CountType, sCoarse2>(kFine + fineOffs, hFine + (i << bits) + fineOffs);
+                }
             }
             // update colPair
             colPair[coarseIdx].beg = beg;
             colPair[coarseIdx].end = end;
 
             // get fineIdx
-            uint32_t fineIdx = fineOffs;
-            for (; fineIdx < sFine; ++fineIdx) {
+            const uint32_t fineEnd = fineOffs + sCoarse2;
+            auto fineIdx = static_cast<uint32_t>(fineOffs);
+            for (; fineIdx < fineEnd; ++fineIdx)
+            {
                 sum += kFine[fineIdx];
                 if (sum > bound)
+                {
                     break;
+                }
             }
             assert(fineIdx < sFine);
-            dstp[x] = fineIdx;
-
+            dstp[x] = static_cast<T>(fineIdx);
 
             // sub coarse on the left side
             if (x - radius >= 0)
+            {
                 sse_histSub<CountType, sCoarse>(kCoarse, hCoarse + (beg << coarseBits));
+            }
         }
 
         // sub column hist of previous rows
-        if (y - radius >= 0) {
-            for (int x = hBeg; x < hEnd; ++x) {
+        if (y - radius >= 0)
+        {
+            for (int x = hBeg; x < hEnd; ++x)
+            {
                 T val = srcp[x - radius * srcStride];
                 --hCoarse[(x << coarseBits) + (val >> (bits - coarseBits))];
                 --hFine[(x << bits) + (val << lshift >> lshift)];
@@ -244,92 +276,97 @@ static inline void cmedian_kernel(const T *srcp, const int srcStride, T *dstp, c
 }
 
 template <typename T, size_t bits>
-static inline void cmedian(const T *srcp, const int srcStride, T *dstp, const int dstStride, const int w, const int h, CMedian *d, int plane, void *hCoarse, void *hFine, void *kCoarse, void *kFine, ColPair *colPair)
+static void cmedian(const T* srcp, const int srcStride, T* dstp, const int dstStride,
+                    const int w, const int h, CMedian* d, int plane)
 {
     static_assert(bits % 2 == 0, "bits must be even number");
 
     // split frames to process
-    const int step = (bits == 8) ? 256 : (bits == 10) ? 192 : (bits == 16) ? 128 : 256;
-    for (int i = 0; i < w; i += step) {
-        if (d->radius < 8)
+    const int step = (bits == 10) ? 192 : (bits == 16) ? 128
+                                                       : 256;
+    const uint32_t coarseBits = getCoarseBits(bits);
+    const uint32_t sCoarse = 1 << coarseBits;
+    const uint32_t sFine = 1 << bits;
+
+    const int chunkW = step + 2 * d->radius;
+    const bool small = d->radius < 8;
+    const size_t elemSz = small ? sizeof(uint8_t) : sizeof(uint16_t);
+
+    void* hCoarse = vsh::vsh_aligned_malloc<void>(elemSz * chunkW * sCoarse, 32);
+    void* hFine = vsh::vsh_aligned_malloc<void>(elemSz * chunkW * sFine, 32);
+    void* kCoarse = vsh::vsh_aligned_malloc<void>(elemSz * sCoarse, 32);
+    void* kFine = vsh::vsh_aligned_malloc<void>(elemSz * sFine, 32);
+    auto* colPair = vsh::vsh_aligned_malloc<ColPair>(sizeof(ColPair) * sCoarse, 32);
+
+    for (int i = 0; i < w; i += step)
+    {
+        const int hBeg = std::max(0, i - d->radius);
+        // Offset pointers, so (x << coarseBits) indexing in kernel stays valid
+        void* hCoarseOff = static_cast<uint8_t*>(hCoarse) - hBeg * sCoarse * elemSz;
+        void* hFineOff = static_cast<uint8_t*>(hFine) - hBeg * sFine * elemSz;
+
+        if (small)
+        {
             cmedian_kernel<T, uint8_t, bits>(srcp, srcStride, dstp, dstStride, w, h, d, plane, i, i + step,
-                reinterpret_cast<uint8_t*>(hCoarse), reinterpret_cast<uint8_t*>(hFine),
-                reinterpret_cast<uint8_t*>(kCoarse), reinterpret_cast<uint8_t*>(kFine), colPair);
-        else
-            cmedian_kernel<T, uint16_t, bits>(srcp, srcStride, dstp, dstStride, w, h, d, plane, i, i + step,
-                reinterpret_cast<uint16_t*>(hCoarse), reinterpret_cast<uint16_t*>(hFine),
-                reinterpret_cast<uint16_t*>(kCoarse), reinterpret_cast<uint16_t*>(kFine), colPair);
-    }
-}
-
-static void VS_CC cmedianInit(VSMap *in, VSMap *out, void **instanceData, VSNode* node, VSCore *core, const VSAPI *vsapi)
-{
-    CMedian *d = reinterpret_cast<CMedian*> (*instanceData);
-    vsapi->setVideoInfo(d->vi, 1, node);
-}
-
-static const VSFrameRef *VS_CC cmedianGetFrame(int n, int activationReason, void **instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi)
-{
-    CMedian *d = reinterpret_cast<CMedian*> (*instanceData);
-
-    if (activationReason == arInitial) {
-
-        vsapi->requestFrameFilter(n, d->node, frameCtx);
-
-    } else if (activationReason == arAllFramesReady) {
-
-        auto src = vsapi->getFrameFilter(n, d->node, frameCtx);
-        auto dst = vsapi->copyFrame(src, core);
-
-        ///////////////////////////////////////////////////////////////////////
-        const uint32_t coarseBits = getCoarseBits(d->vi->format->bitsPerSample);
-        const uint32_t sCoarse = 1 << coarseBits;
-        const uint32_t sFine = 1 << d->vi->format->bitsPerSample;
-
-        void *hCoarse = nullptr, *hFine = nullptr, *kCoarse = nullptr, *kFine = nullptr;
-
-        if (d->radius < 8) {
-            hCoarse = vs_aligned_malloc<void>(sizeof(uint8_t) * d->vi->width * sCoarse, 32);
-            hFine = vs_aligned_malloc<void>(sizeof(uint8_t) * d->vi->width * sFine, 32);
-            kCoarse = vs_aligned_malloc<void>(sizeof(uint8_t) * sCoarse, 32);
-            kFine = vs_aligned_malloc<void>(sizeof(uint8_t) * sFine, 32);
-        } else {
-            hCoarse = vs_aligned_malloc<void>(sizeof(uint16_t) * d->vi->width * sCoarse, 32);
-            hFine = vs_aligned_malloc<void>(sizeof(uint16_t) * d->vi->width * sFine, 32);
-            kCoarse = vs_aligned_malloc<void>(sizeof(uint16_t) * sCoarse, 32);
-            kFine = vs_aligned_malloc<void>(sizeof(uint16_t) * sFine, 32);
+                                             static_cast<uint8_t*>(hCoarseOff), static_cast<uint8_t*>(hFineOff),
+                                             static_cast<uint8_t*>(kCoarse), static_cast<uint8_t*>(kFine), colPair);
         }
+        else
+        {
+            cmedian_kernel<T, uint16_t, bits>(srcp, srcStride, dstp, dstStride, w, h, d, plane, i, i + step,
+                                              static_cast<uint16_t*>(hCoarseOff), static_cast<uint16_t*>(hFineOff),
+                                              static_cast<uint16_t*>(kCoarse), static_cast<uint16_t*>(kFine), colPair);
+        }
+    }
 
-        ColPair *colPair = vs_aligned_malloc<ColPair>(sizeof(ColPair) * sCoarse, 32);
-        ///////////////////////////////////////////////////////////////////////
+    vsh::vsh_aligned_free(hCoarse);
+    vsh::vsh_aligned_free(hFine);
+    vsh::vsh_aligned_free(kCoarse);
+    vsh::vsh_aligned_free(kFine);
+    vsh::vsh_aligned_free(colPair);
+}
 
-        for (int plane = 0; plane < d->vi->format->numPlanes; ++plane) {
+static const VSFrame* VS_CC cmedianGetFrame(int n, int activationReason, void* instanceData, void** /*frameData*/,
+                                            VSFrameContext* frameCtx, VSCore* core, const VSAPI* vsapi)
+{
+    const auto d = static_cast<CMedian*>(instanceData);
 
+    if (activationReason == arInitial)
+    {
+        vsapi->requestFrameFilter(n, d->node, frameCtx);
+    }
+    else if (activationReason == arAllFramesReady)
+    {
+        const auto src = vsapi->getFrameFilter(n, d->node, frameCtx);
+        const auto dst = vsapi->copyFrame(src, core);
+
+        for (int plane = 0; plane < d->vi->format.numPlanes; ++plane)
+        {
             if (!d->planes[plane])
+            {
                 continue;
+            }
 
-            auto srcp = vsapi->getReadPtr(src, plane);
-            auto srcStride = vsapi->getStride(src, plane) / d->vi->format->bytesPerSample;
-            auto dstp = vsapi->getWritePtr(dst, plane);
-            auto dstStride = vsapi->getStride(dst, plane) / d->vi->format->bytesPerSample;
-            auto width = vsapi->getFrameWidth(src, plane);
-            auto height = vsapi->getFrameHeight(src, plane);
+            const auto srcp = vsapi->getReadPtr(src, plane);
+            const auto srcStride = vsapi->getStride(src, plane) / d->vi->format.bytesPerSample;
+            const auto dstp = vsapi->getWritePtr(dst, plane);
+            const auto dstStride = vsapi->getStride(dst, plane) / d->vi->format.bytesPerSample;
+            const auto width = vsapi->getFrameWidth(src, plane);
+            const auto height = vsapi->getFrameHeight(src, plane);
 
-            if (d->vi->format->sampleType == stInteger) {
-                if (d->vi->format->bitsPerSample == 8)
-                    cmedian<uint8_t, 8>(srcp, srcStride, dstp, dstStride, width, height, d, plane, hCoarse, hFine, kCoarse, kFine, colPair);
-                else if (d->vi->format->bitsPerSample == 10)
-                    cmedian<uint16_t, 10>(reinterpret_cast<const uint16_t*>(srcp), srcStride, reinterpret_cast<uint16_t*>(dstp), dstStride, width, height, d, plane, hCoarse, hFine, kCoarse, kFine, colPair);
-                else if (d->vi->format->bitsPerSample == 16)
-                    cmedian<uint16_t, 16>(reinterpret_cast<const uint16_t*>(srcp), srcStride, reinterpret_cast<uint16_t*>(dstp), dstStride, width, height, d, plane, hCoarse, hFine, kCoarse, kFine, colPair);
+            if (d->vi->format.bitsPerSample == 8)
+            {
+                cmedian<uint8_t, 8>(srcp, static_cast<int>(srcStride), dstp, static_cast<int>(dstStride), width, height, d, plane);
+            }
+            else if (d->vi->format.bitsPerSample == 10)
+            {
+                cmedian<uint16_t, 10>(reinterpret_cast<const uint16_t*>(srcp), static_cast<int>(srcStride), reinterpret_cast<uint16_t*>(dstp), static_cast<int>(dstStride), width, height, d, plane);
+            }
+            else if (d->vi->format.bitsPerSample == 16)
+            {
+                cmedian<uint16_t, 16>(reinterpret_cast<const uint16_t*>(srcp), static_cast<int>(srcStride), reinterpret_cast<uint16_t*>(dstp), static_cast<int>(dstStride), width, height, d, plane);
             }
         }
-
-        vs_aligned_free(hCoarse);
-        vs_aligned_free(hFine);
-        vs_aligned_free(kCoarse);
-        vs_aligned_free(kFine);
-        vs_aligned_free(colPair);
 
         vsapi->freeFrame(src);
         return dst;
@@ -337,70 +374,97 @@ static const VSFrameRef *VS_CC cmedianGetFrame(int n, int activationReason, void
     return nullptr;
 }
 
-static void VS_CC cmedianFree(void *instanceData, VSCore *core, const VSAPI *vsapi)
+static void VS_CC cmedianFree(void* instanceData, VSCore* /*core*/, const VSAPI* vsapi)
 {
-    CMedian *d = reinterpret_cast<CMedian*> (instanceData);
+    const auto* d = static_cast<CMedian*>(instanceData);
     vsapi->freeNode(d->node);
     delete d;
 }
 
-static void VS_CC cmedianCreate(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi)
+static void VS_CC cmedianCreate(const VSMap* in, VSMap* out, void* /*userData*/, VSCore* core, const VSAPI* vsapi)
 {
-    CMedian *d = new CMedian();
+    const auto d = new CMedian();
 
     int err;
 
-    try {
+    try
+    {
 
-        d->node = vsapi->propGetNode(in, "clip", 0, 0);
+        d->node = vsapi->mapGetNode(in, "clip", 0, nullptr);
         d->vi = vsapi->getVideoInfo(d->node);
 
-        if (d->vi->format->sampleType != stInteger)
-            throw std::string("only integer sample type support");
+        if (d->vi->format.sampleType != stInteger)
+        {
+            throw std::runtime_error("only integer sample type support");
+        }
 
-        if (d->vi->format->bitsPerSample != 8 &&
-            d->vi->format->bitsPerSample != 10 &&
-            d->vi->format->bitsPerSample != 16)
-            throw std::string("only 8, 10, 16 bits support");
+        if (d->vi->format.bitsPerSample != 8 &&
+            d->vi->format.bitsPerSample != 10 &&
+            d->vi->format.bitsPerSample != 16)
+        {
+            throw std::runtime_error("only 8, 10, 16 bits support");
+        }
 
-        d->radius = int64ToIntS(vsapi->propGetInt(in, "radius", 0, &err));
-        if (err) d->radius = 1;
+        d->radius = vsh::int64ToIntS(vsapi->mapGetInt(in, "radius", 0, &err));
+        if (err)
+        {
+            d->radius = 1;
+        }
 
         if (d->radius < 1 || d->radius > 127)
-            throw std::string("radius must be 1 ... 127");
+        {
+            throw std::runtime_error("radius must be 1 ... 127");
+        }
 
 
-        for (int i = 0; i < 3; ++i)
-            d->planes[i] = false;
+        for (bool& plane : d->planes)
+        {
+            plane = false;
+        }
 
-        int m = vsapi->propNumElements(in, "planes");
+        int m = vsapi->mapNumElements(in, "planes");
 
-        if (m <= 0) {
-            for (int i = 0; i < 3; ++i)
-                d->planes[i] = true;
-        } else {
-            for (int i = 0; i < m; ++i) {
-                int p = int64ToIntS(vsapi->propGetInt(in, "planes", i, &err));
-                if (p < 0 || p > d->vi->format->numPlanes - 1)
-                    throw std::string("planes index out of bound");
+        if (m <= 0)
+        {
+            for (bool& plane : d->planes)
+            {
+                plane = true;
+            }
+        }
+        else
+        {
+            for (int i = 0; i < m; ++i)
+            {
+                int p = vsh::int64ToIntS(vsapi->mapGetInt(in, "planes", i, &err));
+                if (p < 0 || p > d->vi->format.numPlanes - 1)
+                {
+                    throw std::runtime_error("planes index out of bound");
+                }
                 d->planes[p] = true;
             }
         }
-
-    } catch (std::string &errorMsg) {
+    }
+    catch (std::exception& e)
+    {
         vsapi->freeNode(d->node);
-        vsapi->setError(out, std::string("CMedian: ").append(errorMsg).c_str());
+        vsapi->mapSetError(out, (std::string("CMedian: ") + e.what()).c_str());
         return;
     }
 
-    vsapi->createFilter(in, out, "cmedian", cmedianInit, cmedianGetFrame, cmedianFree, fmParallel, 0, d, core);
+    // vsapi->createVFilter(in, out, "cmedian", cmedianInit, cmedianGetFrame, cmedianFree, fmParallel, 0, d, core);
+    const VSFilterDependency deps[] = {{d->node, rpStrictSpatial}};
+    vsapi->createVideoFilter(out, "Median", d->vi, cmedianGetFrame, cmedianFree, fmParallel, deps, 1, d, core);
 }
 
-VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegisterFunction registerFunc, VSPlugin *plugin)
+VS_EXTERNAL_API(void)
+VapourSynthPluginInit2(VSPlugin* plugin, const VSPLUGINAPI* vspapi)
 {
-    configFunc("com.mio.cmedian", "cmedian", "VapourSynth Constant Time Median Filter", VAPOURSYNTH_API_VERSION, 1, plugin);
-    registerFunc("Median", "clip:clip;"
-        "radius:int:opt;"
-        "planes:int[]:opt;",
-        cmedianCreate, nullptr, plugin);
+    vspapi->configPlugin("com.mio.cmedian", "cmedian", "VapourSynth Constant Time Median Filter", VS_MAKE_VERSION(1, 0), VAPOURSYNTH_API_VERSION, 0, plugin);
+    vspapi->registerFunction(
+        "Median",
+        "clip:vnode;radius:int:opt;planes:int[]:opt;",
+        "clip:vnode;",
+        cmedianCreate,
+        nullptr,
+        plugin);
 }

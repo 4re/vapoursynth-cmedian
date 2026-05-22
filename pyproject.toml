@@ -1,0 +1,34 @@
+[build-system]
+requires = ["meson-python", "VapourSynth>=74"]
+build-backend = "mesonpy"
+
+[project]
+name = "CMedian"
+description = "Constant time median filter"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "LGPL-2.1"
+license-files = ["LICENSE"]
+authors = [
+]
+keywords = ["video"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Plugins",
+    "Natural Language :: English",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX",
+    "Operating System :: Unix",
+    "Programming Language :: C++",
+    "Topic :: Multimedia :: Video",
+]
+dependencies = ["VapourSynth>=74"]
+dynamic = ["version"]
+
+[project.urls]
+Repository = "https://github.com/4re/vapoursynth-cmedian.git"
+Issues = "https://github.com/4re/vapoursynth-cmedian/issues"
+
+[tool.meson-python.wheel]
+exclude = ["*.dll.a"]

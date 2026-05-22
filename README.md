@@ -4,7 +4,7 @@
 
 ## Build ##
 
-*   compiler with c++11 support
+*   compiler with c++17 support
 *   CPU with SSE2 support
 
 ## Usage ##
